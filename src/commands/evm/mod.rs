@@ -1,3 +1,4 @@
+use inline_colorization::*;
 use std::collections::VecDeque;
 use std::panic::AssertUnwindSafe;
 use clap::Parser;
@@ -45,13 +46,27 @@ struct Task {
     end: u64,
 }
 
+/// Represents one Kilogas, or `1_000` gas.
+pub const KILOGAS: u64 = 1_000;
+
+/// Represents one Megagas, or `1_000_000` gas.
+pub const MEGAGAS: u64 = KILOGAS * 1_000;
+
+/// Represents one Gigagas, or `1_000_000_000` gas.
+pub const GIGAGAS: u64 = MEGAGAS * 1_000;
+
+pub fn format_gas_throughput_as_ggas(gas: u64, execution_duration: Duration) -> String {
+    let gas_per_second = gas as f64 / execution_duration.as_secs_f64();
+    format!("{:.2}", gas_per_second / GIGAGAS as f64)
+}
+
 impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
     /// Execute the `evm` command
     pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
         self,
         _: CliContext,
     )  -> Result<()> {
-        info!(target: "reth::cli", "Executing EVM command...");
+        info!("Executing EVM command...");
 
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
@@ -130,21 +145,27 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
                     previous_txs_counter = *current_txs_counter;
 
                     if diff_block > 0 {
+                        let duration = start.elapsed();
+                        let seconds = duration.as_secs();
+                        let millis = duration.subsec_millis(); // Milliseconds part of the duration
+                        let total_seconds = seconds as f64 + millis as f64 / 1000.0;
+                        let gas_throughput_str = format_gas_throughput_as_ggas(diff_gas, Duration::from_secs(1));
+                        //let gas_throughput_final : String =gas_throughput_str.chars().take(gas_throughput_str.len()-" Ggas/second".len()).collect();
                         info!(
-                            target: "exex::evm",
-                            blocks = ?current_block_counter,
-                            txs = ?current_txs_counter,
-                            BPS = ?diff_block,
-                            TPS = ?diff_txs,
-                            throughput = format_gas_throughput(diff_gas, Duration::from_secs(1)),
-                            time = ?start.elapsed(),
-                            "Execution progress"
+                            "Execution bn={} txs={} b/s={} TPS={color_green}{}{color_reset} Ggas/s={color_green}{}{color_reset} time={:.1} totalgas={}", current_block_counter,
+                            current_txs_counter,
+                            diff_block,
+                            diff_txs,
+                            gas_throughput_str,
+                            total_seconds,
+                            current_cumulative_gas,
                         );
                     }
 
                     if *current_block_counter >= (self.end_number - self.begin_number + 1) {
                         // return Ok(true);
                     }
+                    //println!("current_cumulative_gas={}", current_cumulative_gas);
                 }
             });
         }
