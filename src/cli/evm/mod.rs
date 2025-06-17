@@ -1,29 +1,36 @@
+//! `reth evm` command.
+
+use clap::{Parser, Subcommand};
+use reth_chainspec::ChainSpec;
+use reth_cli::chainspec::ChainSpecParser;
+use reth_cli_commands::common::CliNodeTypes;
+use reth_cli_runner::CliContext;
+use reth_ethereum_primitives::EthPrimitives;
+use reth_node_ethereum::EthEngineTypes;
+
+use tracing::{info, debug, error, trace};
 use inline_colorization::*;
+use std::time::{Duration, Instant};
+use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
+
+use reth_consensus::{Consensus, FullConsensus};
+use reth_provider::{
+    BlockNumReader, HeaderProvider, ProviderError, 
+    providers::{BlockchainProvider, ProviderNodeTypes, },
+    BlockHashReader, BlockReader, BlockWriter, ChainSpecProvider, ProviderFactory,
+    StageCheckpointReader, StateProviderFactory,
+};
+use reth_errors::{ConsensusError, RethResult};
+use reth_node_ethereum::{consensus::EthBeaconConsensus, EthEvmConfig};
+use reth_evm::{execute::Executor, ConfigureEvm};
+use reth_revm::{cached::CachedReads, cancelled::CancelOnDrop, database::StateProviderDatabase};
 use std::collections::VecDeque;
-use std::panic::AssertUnwindSafe;
-use clap::Parser;
-use eyre::{Report, Result};
-use tracing::{info, debug, error};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
-use reth_blockchain_tree::{BlockchainTree, BlockchainTreeConfig, ShareableBlockchainTree, TreeExternals};
-use reth_chainspec::ChainSpec;
-use reth_cli::chainspec::ChainSpecParser;
-use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
-use reth_cli_runner::CliContext;
-use reth_consensus::Consensus;
-use reth_evm::execute::{BatchExecutor, BlockExecutorProvider};
-use reth_evm_ethereum::execute::EthExecutorProvider;
-use reth_node_types::NodeTypesWithEngine;
-use reth_primitives::constants::gas_units::format_gas_throughput;
-use reth_provider::{BlockReader, ChainSpecProvider, HeaderProvider};
-use reth_provider::providers::BlockchainProvider;
-use reth_prune::PruneModes;
-use reth_revm::database::StateProviderDatabase;
-use crate::beacon_consensus::EthBeaconConsensus;
-use crate::providers::{BlockNumReader, ProviderError, StateProviderFactory};
+use eyre::{Report, Result};
+use std::panic::AssertUnwindSafe;
+use reth_primitives_traits::{BlockBody, format_gas_throughput};
 
 /// EVM commands
 #[derive(Debug, Parser)]
@@ -61,26 +68,25 @@ pub fn format_gas_throughput_as_ggas(gas: u64, execution_duration: Duration) -> 
 }
 
 impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
-    /// Execute the `evm` command
-    pub async fn execute<N: NodeTypesWithEngine<ChainSpec = C::ChainSpec>>(
+    /// Execute `evm` command
+    pub async fn execute<
+        N: CliNodeTypes<
+            Payload = EthEngineTypes,
+            Primitives = EthPrimitives,
+            ChainSpec = C::ChainSpec,
+        >,
+    >(
         self,
-        _: CliContext,
-    )  -> Result<()> {
+        ctx: CliContext,
+    ) -> eyre::Result<()> {
         info!("Executing EVM command...");
 
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
-        let consensus: Arc<dyn Consensus> =
+        let consensus: Arc<dyn FullConsensus<EthPrimitives, Error = ConsensusError>> =
             Arc::new(EthBeaconConsensus::new(provider_factory.chain_spec()));
 
-        let executor = EthExecutorProvider::ethereum(provider_factory.chain_spec());
-
-        // configure blockchain tree
-        let tree_externals =
-            TreeExternals::new(provider_factory.clone(), consensus, executor);
-        let tree = BlockchainTree::new(tree_externals, BlockchainTreeConfig::default())?;
-        let blockchain_tree = Arc::new(ShareableBlockchainTree::new(tree));
-        let blockchain_db = BlockchainProvider::new(provider_factory.clone(), blockchain_tree)?;
+        let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;
 
         let provider = provider_factory.provider()?;
 
@@ -203,24 +209,22 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
                                 .ok_or_else(|| ProviderError::HeaderNotFound(task.start.into()))?;
 
                             let db = StateProviderDatabase::new(blockchain_db.history_by_block_number(task.start - 1)?);
-                            let executor = EthExecutorProvider::ethereum(provider_factory.chain_spec());
-                            let mut executor = executor.batch_executor(db);
+                            let evm_config = EthEvmConfig::ethereum(provider_factory.chain_spec());
+                            let executor = evm_config.batch_executor(db);
                             let blocks = blockchain_db.block_with_senders_range(task.start..=task.end).unwrap();
 
                             let start = Instant::now();
                             let mut step_cumulative_gas: u64 = 0;
                             let mut step_txs_counter: usize = 0;
 
-                            executor.execute_and_verify_many(blocks.iter()
-                                .map(|block| {
-                                    let result = (block, td).into();
-                                    td += block.header.difficulty;
-                                    step_cumulative_gas += block.block.gas_used;
-                                    step_txs_counter += block.block.body.transactions.len();
-                                    debug!(target: "exex::evm", block_number = block.block.header.number, txs_count = block.block.body.transactions.len(), thread_id = ?thread_id, "Adding transactions count");
-                                    result
-                                })
-                                .collect::<Vec<_>>())?;
+                            let execute_result = executor.execute_batch(blocks.iter())?;
+                            trace!(target: "exex::evm", ?execute_result);
+                            blocks.iter().for_each(|block| {
+                                    td += block.sealed_block().header().difficulty;
+                                    step_cumulative_gas += block.sealed_block().header().gas_used;
+                                    step_txs_counter += block.sealed_block().body().transaction_count();
+                                    debug!(target: "exex::evm", block_number = block.sealed_block().header().number, txs_count = block.sealed_block().body().transaction_count(), thread_id = ?thread_id, "Adding transactions count");
+                            });
 
                             // Ensure the locks are correctly used without deadlock
                             {
@@ -246,7 +250,6 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
                                 "loop"
                             );
 
-                            drop(executor);
                             Ok(())
                         }));
 
@@ -277,11 +280,20 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
             };
         }
         thread::sleep(Duration::from_secs(1));
+
+
         Ok(())
     }
 
     // 获取系统 CPU 核心数
     fn get_cpu_count(&self) -> usize {
         num_cpus::get()
+    }
+}
+
+impl<C: ChainSpecParser> EvmCommand<C> {
+    /// Returns the underlying chain being used to run this command
+    pub const fn chain_spec(&self) -> Option<&Arc<C::ChainSpec>> {
+        Some(&self.env.chain)
     }
 }
