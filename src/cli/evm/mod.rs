@@ -1,6 +1,6 @@
 //! `reth evm` command.
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::CliNodeTypes;
@@ -13,17 +13,15 @@ use inline_colorization::*;
 use std::time::{Duration, Instant};
 use reth_cli_commands::common::{AccessRights, Environment, EnvironmentArgs};
 
-use reth_consensus::{Consensus, FullConsensus};
+use reth_consensus::FullConsensus;
 use reth_provider::{
     BlockNumReader, HeaderProvider, ProviderError, 
-    providers::{BlockchainProvider, ProviderNodeTypes, },
-    BlockHashReader, BlockReader, BlockWriter, ChainSpecProvider, ProviderFactory,
-    StageCheckpointReader, StateProviderFactory,
+    providers::BlockchainProvider, BlockReader, ChainSpecProvider, StateProviderFactory,
 };
-use reth_errors::{ConsensusError, RethResult};
+use reth_errors::ConsensusError;
 use reth_node_ethereum::{consensus::EthBeaconConsensus, EthEvmConfig};
 use reth_evm::{execute::Executor, ConfigureEvm};
-use reth_revm::{cached::CachedReads, cancelled::CancelOnDrop, database::StateProviderDatabase};
+use reth_revm::database::StateProviderDatabase;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -83,7 +81,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
 
         let Environment { provider_factory, .. } = self.env.init::<N>(AccessRights::RO)?;
 
-        let consensus: Arc<dyn FullConsensus<EthPrimitives, Error = ConsensusError>> =
+        let _consensus: Arc<dyn FullConsensus<EthPrimitives, Error = ConsensusError>> =
             Arc::new(EthBeaconConsensus::new(provider_factory.chain_spec()));
 
         let blockchain_db = BlockchainProvider::new(provider_factory.clone())?;

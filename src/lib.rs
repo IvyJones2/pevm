@@ -175,11 +175,6 @@ pub mod rpc {
     pub mod result {
         pub use reth_rpc_server_types::result::*;
     }
-
-    /// Re-exported from `reth_rpc_types_compat`.
-    pub mod compat {
-        pub use reth_rpc_types_compat::*;
-    }
 }
 
 /// Ress subprotocol installation.

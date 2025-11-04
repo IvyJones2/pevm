@@ -6,6 +6,7 @@ static ALLOC: reth_cli_util::allocator::Allocator = reth_cli_util::allocator::ne
 use clap::Parser;
 use pevm::{args::RessArgs, cli::Cli, ress::install_ress_subprotocol};
 use pevm::cli::chainspec::EthereumChainSpecParser;
+use reth_cli_commands::launcher::FnLauncher;
 use reth_node_builder::NodeHandle;
 use reth_node_ethereum::EthereumNode;
 use tracing::info;
@@ -19,7 +20,7 @@ fn main() {
     }
 
     if let Err(err) =
-        Cli::<EthereumChainSpecParser, RessArgs>::parse().run(async move |builder, ress_args| {
+        Cli::<EthereumChainSpecParser, RessArgs>::parse().run(FnLauncher::new::<EthereumChainSpecParser, RessArgs>(async move |builder, ress_args| {
             info!(target: "reth::cli", "Launching node");
             let NodeHandle { node, node_exit_future } =
                 builder.node(EthereumNode::default()).launch_with_debug_capabilities().await?;
@@ -37,7 +38,7 @@ fn main() {
             }
 
             node_exit_future.await
-        })
+        }))
     {
         eprintln!("Error: {err:?}");
         std::process::exit(1);

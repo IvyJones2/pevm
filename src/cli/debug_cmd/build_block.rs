@@ -163,7 +163,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                     let encoded_length = pooled.encode_2718_len();
 
                     // insert the blob into the store
-                    blob_store.insert(*transaction.tx_hash(), sidecar)?;
+                    blob_store.insert(*transaction.tx_hash(), alloy_eips::eip7594::BlobTransactionSidecarVariant::Eip4844(sidecar))?;
 
                     encoded_length
                 }
@@ -234,7 +234,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                 debug!(target: "reth::cli", ?execution_outcome, "Executed block");
 
                 let hashed_post_state = state_provider.hashed_post_state(execution_outcome.state());
-                let (state_root, trie_updates) = StateRoot::overlay_root_with_updates(
+                let state_root = StateRoot::overlay_root(
                     provider_factory.provider()?.tx_ref(),
                     hashed_post_state.clone(),
                 )?;
@@ -253,7 +253,6 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> Command<C> {
                     Vec::from([block_with_senders]),
                     &execution_outcome,
                     hashed_post_state.into_sorted(),
-                    trie_updates,
                 )?;
                 info!(target: "reth::cli", "Successfully appended built block");
             }

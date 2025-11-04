@@ -6,17 +6,12 @@ use reth_chainspec::ChainSpec;
 use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::{
     config_cmd, db, download, dump_genesis, import, import_era, init_cmd, init_state,
+    launcher::Launcher,
     node::{self, NoArgs},
-    p2p, prune, recover, stage,
+    p2p, prune, stage,
 };
 use reth_cli_runner::CliRunner;
-use reth_db::DatabaseEnv;
-use reth_network::EthNetworkPrimitives;
-use reth_node_builder::{NodeBuilder, WithLaunchContext};
-use reth_node_core::{
-    args::LogArgs,
-    version::{LONG_VERSION, SHORT_VERSION},
-};
+use reth_node_core::args::LogArgs;
 use reth_node_ethereum::{consensus::EthBeaconConsensus, EthExecutorProvider, EthereumNode};
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_tracing::FileWorkerGuard;
@@ -27,7 +22,7 @@ use tracing::info;
 ///
 /// This is the entrypoint to the executable.
 #[derive(Debug, Parser)]
-#[command(author, version = SHORT_VERSION, long_version = LONG_VERSION, about = "Reth", long_about = None)]
+#[command(author, about = "PEVM", long_about = None)]
 pub struct Cli<C: ChainSpecParser = EthereumChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs>
 {
     /// The command to run
@@ -98,10 +93,9 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
     ///         Ok(()))
     ///     .unwrap();
     /// ````
-    pub fn run<L, Fut>(self, launcher: L) -> eyre::Result<()>
+    pub fn run<L>(self, launcher: L) -> eyre::Result<()>
     where
-        L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
-        Fut: Future<Output = eyre::Result<()>>,
+        L: Launcher<C, Ext>,
     {
         self.with_runner(CliRunner::try_default_runtime()?, launcher)
     }
@@ -131,10 +125,9 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
     ///     })
     ///     .unwrap();
     /// ```
-    pub fn with_runner<L, Fut>(mut self, runner: CliRunner, launcher: L) -> eyre::Result<()>
+    pub fn with_runner<L>(mut self, runner: CliRunner, launcher: L) -> eyre::Result<()>
     where
-        L: FnOnce(WithLaunchContext<NodeBuilder<Arc<DatabaseEnv>, C::ChainSpec>>, Ext) -> Fut,
-        Fut: Future<Output = eyre::Result<()>>,
+        L: Launcher<C, Ext>,
     {
         // Add network name if available to the logs dir
         if let Some(chain_spec) = self.command.chain_spec() {
@@ -148,7 +141,10 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
         let _ = install_prometheus_recorder();
 
         let components = |spec: Arc<C::ChainSpec>| {
-            (EthExecutorProvider::ethereum(spec.clone()), EthBeaconConsensus::new(spec))
+            (
+                EthExecutorProvider::ethereum(spec.clone()),
+                Arc::new(EthBeaconConsensus::new(spec)),
+            )
         };
         match self.command {
             Commands::Node(command) => {
@@ -161,7 +157,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
                 runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
             }
             Commands::Import(command) => {
-                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode, _, _>(components))
+                runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode, _>(components))
             }
             Commands::ImportEra(command) => {
                 runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
@@ -174,10 +170,10 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
                 runner.run_blocking_until_ctrl_c(command.execute::<EthereumNode>())
             }
             Commands::Stage(command) => runner.run_command_until_exit(|ctx| {
-                command.execute::<EthereumNode, _, _, EthNetworkPrimitives>(ctx, components)
+                command.execute::<EthereumNode, _>(ctx, components)
             }),
             Commands::P2P(command) => {
-                runner.run_until_ctrl_c(command.execute::<EthNetworkPrimitives>())
+                runner.run_until_ctrl_c(command.execute::<EthereumNode>())
             }
             #[cfg(feature = "dev")]
             Commands::TestVectors(command) => runner.run_until_ctrl_c(command.execute()),
@@ -186,9 +182,6 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>, Ext: clap::Args + fmt::Debug> Cl
                 runner.run_command_until_exit(|ctx| command.execute::<EthereumNode>(ctx))
             }
             Commands::Evm(command) => {
-                runner.run_command_until_exit(|ctx| command.execute::<EthereumNode>(ctx))
-            }
-            Commands::Recover(command) => {
                 runner.run_command_until_exit(|ctx| command.execute::<EthereumNode>(ctx))
             }
             Commands::Prune(command) => runner.run_until_ctrl_c(command.execute::<EthereumNode>()),
@@ -250,9 +243,6 @@ pub enum Commands<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> {
     Debug(Box<debug_cmd::Command<C>>),
     #[command(name = "evm")]
     Evm(Box<evm::EvmCommand<C>>),
-    /// Scripts for node recovery
-    #[command(name = "recover")]
-    Recover(recover::Command<C>),
     /// Prune according to the configuration without any limits
     #[command(name = "prune")]
     Prune(prune::PruneCommand<C>),
@@ -277,7 +267,6 @@ impl<C: ChainSpecParser, Ext: clap::Args + fmt::Debug> Commands<C, Ext> {
             Self::Config(_) => None,
             Self::Debug(cmd) => cmd.chain_spec(),
             Self::Evm(cmd) => cmd.chain_spec(),
-            Self::Recover(cmd) => cmd.chain_spec(),
             Self::Prune(cmd) => cmd.chain_spec(),
         }
     }
