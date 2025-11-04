@@ -67,7 +67,7 @@ Each thread fetches tasks from a shared task queue, processes blocks within the 
 
 ### Real-Time Monitoring
 
-A separate thread periodically logs the current progress, including the number of processed blocks, transactions, and gas throughput.
+A separate thread periodically records runtime metrics, such as the number of blocks and transactions processed, along with the current gas throughput.
 
 ## Contributing
 
