@@ -60,6 +60,16 @@ pub const MEGAGAS: u64 = KILOGAS * 1_000;
 /// Represents one Gigagas, or `1_000_000_000` gas.
 pub const GIGAGAS: u64 = MEGAGAS * 1_000;
 
+/// Formats gas throughput as Gigagas per second.
+///
+/// # Arguments
+///
+/// * `gas` - Total gas consumed
+/// * `execution_duration` - Duration of execution
+///
+/// # Returns
+///
+/// A formatted string representing the gas throughput in Ggas/s
 pub fn format_gas_throughput_as_ggas(gas: u64, execution_duration: Duration) -> String {
     let gas_per_second = gas as f64 / execution_duration.as_secs_f64();
     format!("{:.2}", gas_per_second / GIGAGAS as f64)
@@ -75,7 +85,7 @@ impl<C: ChainSpecParser<ChainSpec = ChainSpec>> EvmCommand<C> {
         >,
     >(
         self,
-        ctx: CliContext,
+        _ctx: CliContext,
     ) -> eyre::Result<()> {
         info!("Executing EVM command...");
 
